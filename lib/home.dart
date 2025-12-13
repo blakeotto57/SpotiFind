@@ -1,10 +1,19 @@
 import 'package:flutter/material.dart';
+import 'package:spotifind/services/location_service.dart';
+import 'package:spotifind/services/nearby_service.dart';
+import 'package:spotifind/services/playback_service.dart';
+import 'package:spotifind/services/profile_service.dart';
+import 'package:geolocator/geolocator.dart';
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
 
   @override
   Widget build(BuildContext context) {
+    final service = NearbyService();
+    final profile = ProfileService();
+    final loc = LocationService();
+
     return Scaffold(
       backgroundColor: const Color(0xFF000000),
       body: SafeArea(
@@ -18,6 +27,64 @@ class HomeScreen extends StatelessWidget {
                 children: [
                   _buildSongTile(),
                   const SizedBox(height: 20),
+
+                  ElevatedButton(
+                    onPressed: () async {
+                      try {
+                        // Ensure permission (simulators still require it)
+                        LocationPermission perm =
+                            await Geolocator.checkPermission();
+                        if (perm == LocationPermission.denied) {
+                          perm = await Geolocator.requestPermission();
+                        }
+                        if (perm == LocationPermission.deniedForever) {
+                          throw Exception("Location permission denied forever");
+                        }
+
+                        final pos = await Geolocator.getCurrentPosition(
+                          desiredAccuracy: LocationAccuracy.high,
+                        );
+
+                        print(
+                          "CALL nearbyFeed lat=${pos.latitude}, lon=${pos.longitude}",
+                        );
+
+                        final rows = await service.testNearbyFeed(
+                          lat: pos.latitude,
+                          lon: pos.longitude,
+                          radiusM: 500, // use 500 while testing
+                        );
+
+                        print('nearbyFeed rows: $rows');
+                      } catch (e) {
+                        print('nearbyFeed error: $e');
+                      }
+                    },
+                    child: const Text('Test nearbyFeed'),
+                  ),
+
+                  ElevatedButton(
+                    onPressed: () async {
+                      await profile.setShareNowPlaying(true);
+                      print("shareNowPlaying = true");
+                    },
+                    child: const Text("Enable Sharing"),
+                  ),
+
+                  ElevatedButton(
+                    onPressed: () async {
+                      await loc.writeCurrentLocation();
+                      print("Wrote current location");
+                    },
+                    child: const Text("Update Location"),
+                  ),
+                  ElevatedButton(
+                    onPressed: () async {
+                      await PlaybackService().writeTestPlayback();
+                      print("Wrote test playback");
+                    },
+                    child: const Text("Update Playback"),
+                  ),
                 ],
               ),
             ),
@@ -82,7 +149,7 @@ class HomeScreen extends StatelessWidget {
               ),
               overflow: TextOverflow.ellipsis,
             ),
-          )
+          ),
         ],
       ),
     );

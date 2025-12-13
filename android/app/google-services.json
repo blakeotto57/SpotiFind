@@ -1,0 +1,39 @@
+{
+  "project_info": {
+    "project_number": "513336558280",
+    "project_id": "spotifind-id",
+    "storage_bucket": "spotifind-id.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:513336558280:android:c231b665489b67f0a4dbfd",
+        "android_client_info": {
+          "package_name": "com.example.spotifind"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "513336558280-q6ea49ipav91tiock89njtrm4kbjekch.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCunbI6xkH5f-XOpCYjyjuCk5Kif7L_mQI"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "513336558280-q6ea49ipav91tiock89njtrm4kbjekch.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

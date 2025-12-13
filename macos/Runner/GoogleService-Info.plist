@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CLIENT_ID</key>
+	<string>513336558280-urbr16rqkt03ddiib2ccjlibpp7id7de.apps.googleusercontent.com</string>
+	<key>REVERSED_CLIENT_ID</key>
+	<string>com.googleusercontent.apps.513336558280-urbr16rqkt03ddiib2ccjlibpp7id7de</string>
+	<key>API_KEY</key>
+	<string>AIzaSyA_3L1zdde1bkuQ6ZoN-1txJR4u6VbQG7w</string>
+	<key>GCM_SENDER_ID</key>
+	<string>513336558280</string>
+	<key>PLIST_VERSION</key>
+	<string>1</string>
+	<key>BUNDLE_ID</key>
+	<string>com.example.spotifind</string>
+	<key>PROJECT_ID</key>
+	<string>spotifind-id</string>
+	<key>STORAGE_BUCKET</key>
+	<string>spotifind-id.firebasestorage.app</string>
+	<key>IS_ADS_ENABLED</key>
+	<false></false>
+	<key>IS_ANALYTICS_ENABLED</key>
+	<false></false>
+	<key>IS_APPINVITE_ENABLED</key>
+	<true></true>
+	<key>IS_GCM_ENABLED</key>
+	<true></true>
+	<key>IS_SIGNIN_ENABLED</key>
+	<true></true>
+	<key>GOOGLE_APP_ID</key>
+	<string>1:513336558280:ios:0669407c072c8d16a4dbfd</string>
+</dict>
+</plist>
