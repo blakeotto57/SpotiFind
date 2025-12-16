@@ -1,92 +1,328 @@
 import 'package:flutter/material.dart';
-import 'package:spotifind/services/location_service.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:spotifind/services/nearby_service.dart';
 import 'package:spotifind/services/playback_service.dart';
-import 'package:spotifind/services/profile_service.dart';
+import 'package:spotifind/services/spotify_auth_service.dart';
+import 'package:spotifind/models/nearby_row.dart';
+import 'package:spotifind/models/current_song.dart';
 import 'package:geolocator/geolocator.dart';
+import 'dart:async';
 
-class HomeScreen extends StatelessWidget {
+class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    final service = NearbyService();
-    final profile = ProfileService();
-    final loc = LocationService();
+  State<HomeScreen> createState() => _HomeScreenState();
+}
 
+class _HomeScreenState extends State<HomeScreen> {
+  late final NearbyService _nearbyService;
+  late final PlaybackService _playbackService;
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+  
+  Timer? _currentSongTimer;
+
+  CurrentSong? _currentSong;
+  List<NearbyRow> _nearbySongs = [];
+  bool _isLoading = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _nearbyService = NearbyService();
+    _playbackService = PlaybackService();
+    _loadData();
+    _startCurrentSongRefresh();
+  }
+
+  @override
+  void dispose() {
+    _currentSongTimer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _loadData() async {
+    await Future.wait([
+      _loadCurrentSong(),
+      _loadNearbySongs(),
+    ]);
+  }
+
+  /// Starts a timer to refresh the currently playing song every 2 seconds
+  void _startCurrentSongRefresh() {
+    _currentSongTimer = Timer.periodic(const Duration(seconds: 2), (_) async {
+      if (mounted) {
+        await _loadCurrentSong();
+      }
+    });
+  }
+
+  Future<void> _loadCurrentSong() async {
+    try {
+      print('[HomeScreen] Loading current song...');
+      
+      // Check if Spotify is connected
+      final spotifyAuth = SpotifyAuthService.instance;
+      final isConnected = await spotifyAuth.isConnected();
+      print('[HomeScreen] Spotify connected: $isConnected');
+      
+      if (!isConnected) {
+        print('[HomeScreen] Spotify not connected, skipping current song load');
+        setState(() {
+          _currentSong = null;
+        });
+        return;
+      }
+      
+      final song = await _playbackService.getCurrentlyPlayingFromSpotify();
+      print('[HomeScreen] Current song result: $song');
+      setState(() {
+        _currentSong = song;
+      });
+    } catch (e) {
+      print('[HomeScreen] Error loading current song: $e');
+    }
+  }
+
+  Future<void> _loadNearbySongs() async {
+    setState(() {
+      _isLoading = true;
+      _error = null;
+    });
+
+    try {
+      // Check location permission
+      LocationPermission perm = await Geolocator.checkPermission();
+      if (perm == LocationPermission.denied) {
+        perm = await Geolocator.requestPermission();
+      }
+      if (perm == LocationPermission.deniedForever) {
+        throw Exception("Location permission denied forever");
+      }
+
+      // Get current position
+      final position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      );
+
+      // Fetch nearby songs
+      final songs = await _nearbyService.getNearby(
+        lat: position.latitude,
+        lon: position.longitude,
+        radiusM: 500,
+      );
+
+      setState(() {
+        _nearbySongs = songs;
+        _isLoading = false;
+      });
+    } catch (e) {
+      setState(() {
+        _error = e.toString();
+        _isLoading = false;
+      });
+      print('Error loading nearby songs: $e');
+    }
+  }
+
+  Future<void> _refreshAll() async {
+    await Future.wait([
+      _loadCurrentSong(),
+      _loadNearbySongs(),
+    ]);
+  }
+
+  Future<void> _logout() async {
+    try {
+      print('[HomeScreen] Logging out...');
+      
+      // Sign out from Spotify
+      await SpotifyAuthService.instance.disconnect();
+      print('[HomeScreen] Spotify disconnected');
+      
+      // Sign out from Firebase
+      await FirebaseAuth.instance.signOut();
+      print('[HomeScreen] Firebase signed out');
+      
+      if (!mounted) return;
+      
+      // Navigate back to connect screen
+      Navigator.of(context).pushReplacementNamed('/connect');
+    } catch (e) {
+      print('[HomeScreen] Error during logout: $e');
+      if (!mounted) return;
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Logout error: $e')),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     return Scaffold(
+      key: _scaffoldKey,
       backgroundColor: const Color(0xFF000000),
+      drawer: _buildDrawer(),
       body: SafeArea(
         child: Column(
           children: [
             _buildHeader(),
             const SizedBox(height: 12),
-            Expanded(
-              child: ListView(
+            // Current song section
+            if (_currentSong != null)
+              Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16),
-                children: [
-                  _buildSongTile(),
-                  const SizedBox(height: 20),
-
-                  ElevatedButton(
-                    onPressed: () async {
-                      try {
-                        // Ensure permission (simulators still require it)
-                        LocationPermission perm =
-                            await Geolocator.checkPermission();
-                        if (perm == LocationPermission.denied) {
-                          perm = await Geolocator.requestPermission();
-                        }
-                        if (perm == LocationPermission.deniedForever) {
-                          throw Exception("Location permission denied forever");
-                        }
-
-                        final pos = await Geolocator.getCurrentPosition(
-                          desiredAccuracy: LocationAccuracy.high,
-                        );
-
-                        print(
-                          "CALL nearbyFeed lat=${pos.latitude}, lon=${pos.longitude}",
-                        );
-
-                        final rows = await service.testNearbyFeed(
-                          lat: pos.latitude,
-                          lon: pos.longitude,
-                          radiusM: 500, // use 500 while testing
-                        );
-
-                        print('nearbyFeed rows: $rows');
-                      } catch (e) {
-                        print('nearbyFeed error: $e');
-                      }
-                    },
-                    child: const Text('Test nearbyFeed'),
-                  ),
-
-                  ElevatedButton(
-                    onPressed: () async {
-                      await profile.setShareNowPlaying(true);
-                      print("shareNowPlaying = true");
-                    },
-                    child: const Text("Enable Sharing"),
-                  ),
-
-                  ElevatedButton(
-                    onPressed: () async {
-                      await loc.writeCurrentLocation();
-                      print("Wrote current location");
-                    },
-                    child: const Text("Update Location"),
-                  ),
-                  ElevatedButton(
-                    onPressed: () async {
-                      await PlaybackService().writeTestPlayback();
-                      print("Wrote test playback");
-                    },
-                    child: const Text("Update Playback"),
-                  ),
-                ],
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Now Playing',
+                      style: TextStyle(
+                        color: Colors.grey,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    _buildCurrentSongTile(_currentSong!),
+                    const SizedBox(height: 16),
+                    const Divider(color: Color(0xFF2C2C2C), height: 1),
+                    const SizedBox(height: 16),
+                  ],
+                ),
+              )
+            else
+              // Show status when no song is playing
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'Now Playing',
+                          style: TextStyle(
+                            color: Colors.grey,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        GestureDetector(
+                          onTap: _loadCurrentSong,
+                          child: const Icon(
+                            Icons.refresh,
+                            color: Colors.grey,
+                            size: 18,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1A1A1A),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Color(0xFF2C2C2C), width: 1),
+                      ),
+                      child: const Center(
+                        child: Text(
+                          'Not playing anything',
+                          style: TextStyle(
+                            color: Colors.grey,
+                            fontSize: 13,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    const Divider(color: Color(0xFF2C2C2C), height: 1),
+                    const SizedBox(height: 16),
+                  ],
+                ),
               ),
+            // Nearby songs section
+            Expanded(
+              child: _isLoading
+                  ? const Center(
+                      child: CircularProgressIndicator(
+                        valueColor: AlwaysStoppedAnimation<Color>(
+                          Color(0xFF1DB954),
+                        ),
+                      ),
+                    )
+                  : _error != null
+                      ? Center(
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Text(
+                                'Error: $_error',
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(
+                                  color: Colors.red,
+                                  fontSize: 14,
+                                ),
+                              ),
+                              const SizedBox(height: 16),
+                              ElevatedButton(
+                                onPressed: _loadNearbySongs,
+                                child: const Text('Retry'),
+                              ),
+                            ],
+                          ),
+                        )
+                      : _nearbySongs.isEmpty
+                          ? Center(
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  const Icon(
+                                    Icons.music_note,
+                                    size: 48,
+                                    color: Colors.grey,
+                                  ),
+                                  const SizedBox(height: 16),
+                                  const Text(
+                                    'No songs nearby',
+                                    style: TextStyle(
+                                      color: Colors.grey,
+                                      fontSize: 16,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 16),
+                                  ElevatedButton(
+                                    onPressed: _loadNearbySongs,
+                                    child: const Text('Refresh'),
+                                  ),
+                                ],
+                              ),
+                            )
+                          : RefreshIndicator(
+                              onRefresh: _refreshAll,
+                              child: ListView(
+                                padding:
+                                    const EdgeInsets.symmetric(horizontal: 16),
+                                children: [
+                                  const Text(
+                                    'People Listening Nearby',
+                                    style: TextStyle(
+                                      color: Colors.grey,
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  for (final song in _nearbySongs)
+                                    _buildNearbySongTile(song),
+                                  const SizedBox(height: 20),
+                                ],
+                              ),
+                            ),
             ),
           ],
         ),
@@ -101,7 +337,10 @@ class HomeScreen extends StatelessWidget {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          const Icon(Icons.menu, color: Colors.white, size: 30),
+          GestureDetector(
+            onTap: () => _scaffoldKey.currentState?.openDrawer(),
+            child: const Icon(Icons.menu, color: Colors.white, size: 30),
+          ),
           const Text(
             "SpotiFind",
             style: TextStyle(
@@ -120,35 +359,279 @@ class HomeScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildSongTile() {
+  Widget _buildDrawer() {
+    return Drawer(
+      backgroundColor: const Color(0xFF1A1A1A),
+      child: SafeArea(
+        child: ListView(
+          padding: EdgeInsets.zero,
+          children: [
+            // Drawer header
+            Container(
+              padding: const EdgeInsets.all(16),
+              color: const Color(0xFF121212),
+              child: Row(
+                children: [
+                  CircleAvatar(
+                    radius: 24,
+                    backgroundColor: const Color(0xFF1DB954),
+                    child: const Icon(
+                      Icons.person,
+                      color: Colors.white,
+                      size: 32,
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: const [
+                      Text(
+                        'SpotiFind',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      SizedBox(height: 4),
+                      Text(
+                        'Discover Music',
+                        style: TextStyle(
+                          color: Colors.grey,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+            // Menu items
+            ListTile(
+              leading: const Icon(Icons.home, color: Color(0xFF1DB954)),
+              title: const Text(
+                'Home',
+                style: TextStyle(color: Colors.white),
+              ),
+              onTap: () => Navigator.pop(context),
+            ),
+            const Divider(color: Color(0xFF2C2C2C)),
+            const SizedBox(height: 8),
+            // Logout button
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: ElevatedButton.icon(
+                onPressed: _logout,
+                icon: const Icon(Icons.logout),
+                label: const Text('Log Out'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.red.shade700,
+                  foregroundColor: Colors.white,
+                  minimumSize: const Size(double.infinity, 48),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCurrentSongTile(CurrentSong song) {
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: const Color(0xFF1A1A1A),
-        borderRadius: BorderRadius.circular(20),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFF1DB954), width: 1.5),
       ),
       child: Row(
         children: [
+          // Album art
           Container(
-            height: 60,
-            width: 60,
+            height: 64,
+            width: 64,
             decoration: BoxDecoration(
               color: const Color(0xFF2C2C2C),
-              borderRadius: BorderRadius.circular(12),
+              borderRadius: BorderRadius.circular(8),
             ),
-            child: const Icon(Icons.image, color: Colors.green, size: 30),
+            child: song.albumArtUrl != null && song.albumArtUrl!.isNotEmpty
+                ? ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: Image.network(
+                      song.albumArtUrl!,
+                      fit: BoxFit.cover,
+                      errorBuilder: (context, error, stackTrace) {
+                        return const Icon(Icons.music_note,
+                            color: Colors.green, size: 32);
+                      },
+                    ),
+                  )
+                : const Icon(Icons.music_note, color: Colors.green, size: 32),
           ),
-          const SizedBox(width: 14),
+          const SizedBox(width: 12),
+          // Song info
           Expanded(
-            child: Text(
-              "Come Back — Buddha Remastered",
-              style: const TextStyle(
-                color: Color(0xFF1DB954),
-                fontSize: 16,
-                fontWeight: FontWeight.w500,
-              ),
-              overflow: TextOverflow.ellipsis,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  song.songName,
+                  style: const TextStyle(
+                    color: Color(0xFF1DB954),
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  song.songArtist,
+                  style: const TextStyle(
+                    color: Colors.grey,
+                    fontSize: 13,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: 6),
+                // Progress bar
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(2),
+                  child: LinearProgressIndicator(
+                    value: song.durationMs > 0
+                        ? (song.progressMs / song.durationMs).clamp(0.0, 1.0)
+                        : 0,
+                    backgroundColor: const Color(0xFF2C2C2C),
+                    valueColor: const AlwaysStoppedAnimation<Color>(
+                      Color(0xFF1DB954),
+                    ),
+                    minHeight: 4,
+                  ),
+                ),
+              ],
             ),
+          ),
+          const SizedBox(width: 8),
+          // Duration
+          Text(
+            formatDurationMs(song.durationMs),
+            style: const TextStyle(
+              color: Colors.grey,
+              fontSize: 12,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildNearbySongTile(NearbyRow song) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1A1A1A),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              // Album art
+              Container(
+                height: 56,
+                width: 56,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF2C2C2C),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: song.albumArtUrl.isNotEmpty
+                    ? ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: Image.network(
+                          song.albumArtUrl,
+                          fit: BoxFit.cover,
+                          errorBuilder: (context, error, stackTrace) {
+                            return const Icon(Icons.music_note,
+                                color: Colors.green, size: 28);
+                          },
+                        ),
+                      )
+                    : const Icon(Icons.music_note,
+                        color: Colors.green, size: 28),
+              ),
+              const SizedBox(width: 12),
+              // Song and artist info
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      song.songName,
+                      style: const TextStyle(
+                        color: Color(0xFF1DB954),
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      song.songArtist,
+                      style: const TextStyle(
+                        color: Colors.grey,
+                        fontSize: 12,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              // Duration
+              Text(
+                formatDurationMs(song.durationMs),
+                style: const TextStyle(
+                  color: Colors.grey,
+                  fontSize: 12,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          // User and distance info
+          Row(
+            children: [
+              const Icon(Icons.person, color: Colors.grey, size: 14),
+              const SizedBox(width: 4),
+              Expanded(
+                child: Text(
+                  song.displayName,
+                  style: const TextStyle(
+                    color: Colors.grey,
+                    fontSize: 11,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              const SizedBox(width: 8),
+              const Icon(Icons.location_on, color: Colors.grey, size: 14),
+              const SizedBox(width: 4),
+              Text(
+                '${(song.distanceM / 1000).toStringAsFixed(1)} km',
+                style: const TextStyle(
+                  color: Colors.grey,
+                  fontSize: 11,
+                ),
+              ),
+            ],
           ),
         ],
       ),

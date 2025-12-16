@@ -9,12 +9,14 @@
 		<string>Editor</string>
 		<key>CFBundleURLSchemes</key>
 		<array>
-		<string>spotifind</string>
+			<string>spotifind</string>
 		</array>
 	</dict>
 	</array>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>We use your location to show songs playing nearby.</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleExecutable</key>

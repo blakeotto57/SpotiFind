@@ -1,26 +1,84 @@
 import 'package:flutter/material.dart';
 import '../services/spotify_auth_service.dart';
+import 'package:spotifind/home.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+
 
 class ConnectSpotifyScreen extends StatelessWidget {
   const ConnectSpotifyScreen({super.key});
 
   Future<void> _startSpotifyLogin(BuildContext context) async {
-    try {
-      await SpotifyAuthService.instance.connect();
+  try {
+    debugPrint("Starting Spotify connect...");
 
-      if (!context.mounted) return;
-      Navigator.of(context).pushReplacementNamed('/home');
+    await SpotifyAuthService.instance
+        .connect()
+        .timeout(const Duration(seconds: 60));
+
+    debugPrint("connect() returned");
+
+    final ok = await SpotifyAuthService.instance.isConnected();
+    debugPrint("Spotify connected? $ok");
+
+    if (!context.mounted) {
+      debugPrint("Context not mounted after connection check");
+      return;
+    }
+
+    if (!ok) {
+      debugPrint("Spotify connection check failed");
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Spotify sign-in didn't finish.")),
+      );
+      return;
+    }
+
+    // Sign in with Firebase (anonymously) to get a UID for the services
+    debugPrint("Signing in to Firebase...");
+    try {
+      await FirebaseAuth.instance.signInAnonymously();
+      debugPrint("Firebase sign-in complete");
     } catch (e) {
+      debugPrint("Firebase sign-in error: $e");
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("Spotify connect failed: $e")),
+        SnackBar(content: Text("Firebase sign-in failed: $e")),
       );
+      return;
     }
+
+    debugPrint("About to navigate to HomeScreen");
+    
+    // Navigate using a simple approach
+    if (context.mounted) {
+      // Use a small delay to ensure context is ready
+      Future.delayed(const Duration(milliseconds: 100), () {
+        if (context.mounted) {
+          Navigator.of(context).pushAndRemoveUntil(
+            MaterialPageRoute(builder: (context) => const HomeScreen()),
+            (route) => false,
+          );
+          debugPrint("Navigation pushed");
+        }
+      });
+    }
+  } catch (e, st) {
+    debugPrint("Spotify connect failed: $e");
+    debugPrint("$st");
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text("Spotify connect failed: $e")),
+    );
   }
+}
+
+
+
 
   void _showConnectSheet(BuildContext context) {
     showModalBottomSheet(
       context: context,
+      useRootNavigator: true,
       backgroundColor: const Color(0xFF121212),
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
@@ -69,7 +127,9 @@ class ConnectSpotifyScreen extends StatelessWidget {
                     ),
                   ),
                   onPressed: () async {
-                    Navigator.of(ctx).pop(); // close sheet
+                    // Close the sheet first
+                    Navigator.of(ctx).pop();
+                    // Then start login with the outer context
                     await _startSpotifyLogin(context);
                   },
                   child: const Text(
