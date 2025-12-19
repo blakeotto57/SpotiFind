@@ -41,6 +41,9 @@ class SpotifyAuthService {
     debugPrint("SpotifyAuth: begin connect");
 
     try {
+      // Clear any old tokens first
+      await disconnect();
+      
       final codeVerifier = _generateCodeVerifier();
       final codeChallenge = _generateCodeChallenge(codeVerifier);
       
@@ -54,7 +57,7 @@ class SpotifyAuthService {
           'redirect_uri': _redirectUrl,
           'code_challenge_method': 'S256',
           'code_challenge': codeChallenge,
-          'scope': 'user-read-currently-playing user-read-playback-state',
+          'scope': 'user-read-currently-playing user-read-playback-state user-read-private',
           'show_dialog': 'true',
         },
       );
@@ -122,6 +125,13 @@ class SpotifyAuthService {
       }
 
       debugPrint("SpotifyAuth: tokens stored successfully");
+      
+      // Verify which account we connected to
+      try {
+        await getMe();
+      } catch (e) {
+        debugPrint("SpotifyAuth: Warning - could not verify account: $e");
+      }
     } catch (e) {
       debugPrint("SpotifyAuth: connect error: $e");
       rethrow;
@@ -140,23 +150,31 @@ class SpotifyAuthService {
   }
 
   /// Returns a valid access token, refreshing if needed.
-  Future<String> getValidAccessToken() async {
+  /// If getNewToken is true, forces refresh even if cached token exists
+  Future<String> getValidAccessToken({bool forceRefresh = false}) async {
     final rt = await _storage.read(key: _refreshTokenKey);
     if (rt == null || rt.isEmpty) {
       throw Exception("Spotify not connected");
     }
 
-    final access = await _storage.read(key: _accessTokenKey);
-    final expStr = await _storage.read(key: _accessExpKey);
-    final expMs = int.tryParse(expStr ?? "");
+    if (!forceRefresh) {
+      final access = await _storage.read(key: _accessTokenKey);
+      final expStr = await _storage.read(key: _accessExpKey);
+      final expMs = int.tryParse(expStr ?? "");
 
-    final nowMs = DateTime.now().millisecondsSinceEpoch;
-    final isExpiredSoon = expMs == null ? true : (expMs - nowMs) < 60 * 1000;
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      final isExpiredSoon = expMs == null ? true : (expMs - nowMs) < 60 * 1000;
 
-    if (access != null && access.isNotEmpty && !isExpiredSoon) {
-      return access;
+      if (access != null && access.isNotEmpty && !isExpiredSoon) {
+        debugPrint("[SpotifyAuth] Using cached access token (expires in ${((expMs ?? 0) - nowMs) / 1000 / 60} minutes)");
+        return access;
+      }
+    } else {
+      debugPrint("[SpotifyAuth] Forcing token refresh...");
     }
 
+    debugPrint("[SpotifyAuth] Access token expired or missing, refreshing...");
+    
     // Refresh the access token using the refresh token
     final refreshResponse = await http.post(
       Uri.parse(_tokenEndpoint),
@@ -169,6 +187,8 @@ class SpotifyAuthService {
     );
 
     if (refreshResponse.statusCode != 200) {
+      debugPrint("[SpotifyAuth] Token refresh failed: ${refreshResponse.statusCode}");
+      debugPrint("[SpotifyAuth] Response: ${refreshResponse.body.substring(0, min(500, refreshResponse.body.length))}");
       throw Exception("Spotify token refresh failed: ${refreshResponse.statusCode}");
     }
 
@@ -187,6 +207,7 @@ class SpotifyAuthService {
       await _storage.write(key: _accessExpKey, value: expMs.toString());
     }
 
+    debugPrint("[SpotifyAuth] ✓ Got new access token (expires in $expiresIn seconds)");
     return newAccessToken;
   }
 
@@ -200,7 +221,11 @@ class SpotifyAuthService {
     if (resp.statusCode != 200) {
       throw Exception("Spotify /me failed: ${resp.statusCode} ${resp.body}");
     }
-    return jsonDecode(resp.body) as Map<String, dynamic>;
+    final meData = jsonDecode(resp.body) as Map<String, dynamic>;
+    final email = meData['email'] as String?;
+    final displayName = meData['display_name'] as String?;
+    debugPrint("[SpotifyAuth] ✓ Connected as: $displayName ($email)");
+    return meData;
   }
 
   /// Get currently playing track
@@ -220,6 +245,9 @@ class SpotifyAuthService {
       // 204 = nothing playing
       if (resp.statusCode == 204) {
         debugPrint("[SpotifyAuth] No track currently playing (204 response)");
+        // Try to get device info to help debug
+        debugPrint("[SpotifyAuth] Fetching device info...");
+        await _getAvailableDevices(token);
         return null;
       }
       if (resp.statusCode != 200) {
@@ -233,6 +261,144 @@ class SpotifyAuthService {
     } catch (e) {
       debugPrint("[SpotifyAuth] Error in getCurrentlyPlaying: $e");
       rethrow;
+    }
+  }
+
+  /// Helper method to get available devices (for debugging)
+  Future<void> _getAvailableDevices(String token) async {
+    try {
+      final resp = await http.get(
+        Uri.parse("https://api.spotify.com/v1/me/player/devices"),
+        headers: {"Authorization": "Bearer $token"},
+      );
+
+      if (resp.statusCode == 200) {
+        final data = jsonDecode(resp.body) as Map<String, dynamic>;
+        final devices = data['devices'] as List?;
+        
+        if (devices != null && devices.isNotEmpty) {
+          debugPrint("[SpotifyAuth] Available devices: ${devices.length}");
+          for (final device in devices) {
+            final deviceMap = device as Map<String, dynamic>;
+            final name = deviceMap['name'] ?? 'Unknown';
+            final type = deviceMap['type'] ?? 'Unknown';
+            final isActive = deviceMap['is_active'] ?? false;
+            debugPrint("[SpotifyAuth] - Device: $name (Type: $type, Active: $isActive)");
+          }
+        } else {
+          debugPrint("[SpotifyAuth] No devices available");
+        }
+      } else {
+        debugPrint("[SpotifyAuth] Failed to get devices: ${resp.statusCode}");
+      }
+    } catch (e) {
+      debugPrint("[SpotifyAuth] Error fetching devices: $e");
+    }
+  }
+
+  /// Get currently playing by checking all available devices
+  /// Since Spotify API only returns playback from the active device,
+  /// we use the /me/player endpoint which returns player state regardless
+  Future<Map<String, dynamic>?> getCurrentlyPlayingFromAnyDevice() async {
+    try {
+      final token = await getValidAccessToken();
+      debugPrint("[SpotifyAuth] ========== GETTING PLAYBACK FROM /me/player ==========");
+      
+      // Use the /me/player endpoint which returns current playback context
+      final resp = await http.get(
+        Uri.parse("https://api.spotify.com/v1/me/player"),
+        headers: {"Authorization": "Bearer $token"},
+      );
+
+      debugPrint("[SpotifyAuth] /me/player response status: ${resp.statusCode}");
+
+      if (resp.statusCode == 204) {
+        debugPrint("[SpotifyAuth] No active playback (204 response)");
+        return null;
+      }
+
+      if (resp.statusCode != 200) {
+        debugPrint("[SpotifyAuth] Failed to get player state: ${resp.statusCode}");
+        debugPrint("[SpotifyAuth] Response: ${resp.body.substring(0, min(500, resp.body.length))}");
+        return null;
+      }
+
+      final data = jsonDecode(resp.body) as Map<String, dynamic>;
+      final isPlaying = data['is_playing'] as bool? ?? false;
+      final item = data['item'] as Map<String, dynamic>?;
+      
+      debugPrint("[SpotifyAuth] Is playing: $isPlaying");
+      debugPrint("[SpotifyAuth] Has item: ${item != null}");
+      
+      if (item != null) {
+        debugPrint("[SpotifyAuth] Current track: ${item['name']}");
+        debugPrint("[SpotifyAuth] Device: ${data['device']?['name']}");
+      }
+      
+      // Return the full player state if we have playback info
+      if (isPlaying && item != null) {
+        debugPrint("[SpotifyAuth] ✓ Got active playback from /me/player");
+        return data;
+      } else if (item != null) {
+        debugPrint("[SpotifyAuth] ✓ Got item (paused playback) from /me/player");
+        return data;
+      }
+
+      debugPrint("[SpotifyAuth] No track data available from /me/player");
+      return null;
+    } catch (e) {
+      debugPrint("[SpotifyAuth] ✗ Error in getCurrentlyPlayingFromAnyDevice: $e");
+      return null;
+    }
+  }
+
+  /// Get all devices with their current playback state
+  /// Returns a list of maps containing device info and playback data
+  Future<List<Map<String, dynamic>>?> getAvailableDevicesWithPlayback() async {
+    try {
+      final token = await getValidAccessToken();
+      debugPrint("[SpotifyAuth] Fetching devices with playback...");
+      
+      final resp = await http.get(
+        Uri.parse("https://api.spotify.com/v1/me/player/devices"),
+        headers: {"Authorization": "Bearer $token"},
+      );
+
+      if (resp.statusCode != 200) {
+        debugPrint("[SpotifyAuth] Failed to get devices: ${resp.statusCode}");
+        return null;
+      }
+
+      final data = jsonDecode(resp.body) as Map<String, dynamic>;
+      final devices = data['devices'] as List?;
+
+      if (devices == null || devices.isEmpty) {
+        debugPrint("[SpotifyAuth] No devices available");
+        return null;
+      }
+
+      debugPrint("[SpotifyAuth] Found ${devices.length} devices");
+      
+      final result = <Map<String, dynamic>>[];
+
+      // For each device, check if it's active
+      for (final device in devices) {
+        final deviceMap = device as Map<String, dynamic>;
+        final deviceName = deviceMap['name'] ?? 'Unknown';
+        final isActive = deviceMap['is_active'] as bool? ?? false;
+        
+        debugPrint("[SpotifyAuth] Device: $deviceName (Active: $isActive)");
+        
+        // If this device is active, we can get its playback
+        if (isActive) {
+          result.add({'device': deviceMap, 'is_active': true});
+        }
+      }
+
+      return result.isEmpty ? null : result;
+    } catch (e) {
+      debugPrint("[SpotifyAuth] Error in getAvailableDevicesWithPlayback: $e");
+      return null;
     }
   }
 }

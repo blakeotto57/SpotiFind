@@ -6,6 +6,7 @@ import 'package:spotifind/services/spotify_auth_service.dart';
 import 'package:spotifind/models/nearby_row.dart';
 import 'package:spotifind/models/current_song.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'dart:async';
 
 class HomeScreen extends StatefulWidget {
@@ -106,12 +107,19 @@ class _HomeScreenState extends State<HomeScreen> {
         desiredAccuracy: LocationAccuracy.high,
       );
 
+      print('[HomeScreen] My location: lat=${position.latitude}, lon=${position.longitude}');
+
       // Fetch nearby songs
       final songs = await _nearbyService.getNearby(
         lat: position.latitude,
         lon: position.longitude,
         radiusM: 500,
       );
+
+      print('[HomeScreen] Got ${songs.length} nearby songs');
+      for (final song in songs) {
+        print('[HomeScreen]   - ${song.displayName}: ${song.songName}');
+      }
 
       setState(() {
         _nearbySongs = songs;
@@ -122,7 +130,7 @@ class _HomeScreenState extends State<HomeScreen> {
         _error = e.toString();
         _isLoading = false;
       });
-      print('Error loading nearby songs: $e');
+      print('[HomeScreen] Error loading nearby songs: $e');
     }
   }
 
@@ -155,6 +163,52 @@ class _HomeScreenState extends State<HomeScreen> {
       
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Logout error: $e')),
+      );
+    }
+  }
+
+  Future<void> _openSpotifyTrack(String? spotifyUrl) async {
+    if (spotifyUrl == null || spotifyUrl.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No Spotify URL available')),
+      );
+      return;
+    }
+
+    try {
+      // Try to open in Spotify app first with spotify: URI
+      // Extract track ID from the spotify URL
+      // URL format: https://open.spotify.com/track/TRACK_ID
+      final parts = spotifyUrl.split('/');
+      if (parts.length > 4) {
+        final trackId = parts[4].split('?')[0]; // Remove query params
+        final spotifyUri = 'spotify:track:$trackId';
+        
+        // Try opening with Spotify app first
+        if (await canLaunchUrl(Uri.parse(spotifyUri))) {
+          await launchUrl(Uri.parse(spotifyUri));
+          return;
+        }
+      }
+
+      // Fall back to web URL if app not available
+      if (await canLaunchUrl(Uri.parse(spotifyUrl))) {
+        await launchUrl(
+          Uri.parse(spotifyUrl),
+          mode: LaunchMode.externalApplication,
+        );
+      } else {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not open Spotify')),
+        );
+      }
+    } catch (e) {
+      print('[HomeScreen] Error opening Spotify: $e');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error: $e')),
       );
     }
   }
@@ -349,10 +403,16 @@ class _HomeScreenState extends State<HomeScreen> {
               fontWeight: FontWeight.bold,
             ),
           ),
-          CircleAvatar(
-            radius: 18,
-            backgroundColor: Colors.grey.shade800,
-            child: const Icon(Icons.person, color: Colors.white),
+          GestureDetector(
+            onLongPress: () {
+              // Debug: check playback data
+              _playbackService.debugCheckPlaybackData();
+            },
+            child: CircleAvatar(
+              radius: 18,
+              backgroundColor: Colors.grey.shade800,
+              child: const Icon(Icons.person, color: Colors.white),
+            ),
           ),
         ],
       ),
@@ -439,91 +499,94 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildCurrentSongTile(CurrentSong song) {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: const Color(0xFF1A1A1A),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: const Color(0xFF1DB954), width: 1.5),
-      ),
-      child: Row(
-        children: [
-          // Album art
-          Container(
-            height: 64,
-            width: 64,
-            decoration: BoxDecoration(
-              color: const Color(0xFF2C2C2C),
-              borderRadius: BorderRadius.circular(8),
+    return GestureDetector(
+      onTap: () => _openSpotifyTrack(song.spotifyUrl),
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: const Color(0xFF1A1A1A),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: const Color(0xFF1DB954), width: 1.5),
+        ),
+        child: Row(
+          children: [
+            // Album art
+            Container(
+              height: 64,
+              width: 64,
+              decoration: BoxDecoration(
+                color: const Color(0xFF2C2C2C),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: song.albumArtUrl != null && song.albumArtUrl!.isNotEmpty
+                  ? ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: Image.network(
+                        song.albumArtUrl!,
+                        fit: BoxFit.cover,
+                        errorBuilder: (context, error, stackTrace) {
+                          return const Icon(Icons.music_note,
+                              color: Colors.green, size: 32);
+                        },
+                      ),
+                    )
+                  : const Icon(Icons.music_note, color: Colors.green, size: 32),
             ),
-            child: song.albumArtUrl != null && song.albumArtUrl!.isNotEmpty
-                ? ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: Image.network(
-                      song.albumArtUrl!,
-                      fit: BoxFit.cover,
-                      errorBuilder: (context, error, stackTrace) {
-                        return const Icon(Icons.music_note,
-                            color: Colors.green, size: 32);
-                      },
+            const SizedBox(width: 12),
+            // Song info
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    song.songName,
+                    style: const TextStyle(
+                      color: Color(0xFF1DB954),
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
                     ),
-                  )
-                : const Icon(Icons.music_note, color: Colors.green, size: 32),
-          ),
-          const SizedBox(width: 12),
-          // Song info
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  song.songName,
-                  style: const TextStyle(
-                    color: Color(0xFF1DB954),
-                    fontSize: 15,
-                    fontWeight: FontWeight.w600,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  song.songArtist,
-                  style: const TextStyle(
-                    color: Colors.grey,
-                    fontSize: 13,
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                const SizedBox(height: 6),
-                // Progress bar
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(2),
-                  child: LinearProgressIndicator(
-                    value: song.durationMs > 0
-                        ? (song.progressMs / song.durationMs).clamp(0.0, 1.0)
-                        : 0,
-                    backgroundColor: const Color(0xFF2C2C2C),
-                    valueColor: const AlwaysStoppedAnimation<Color>(
-                      Color(0xFF1DB954),
+                  const SizedBox(height: 4),
+                  Text(
+                    song.songArtist,
+                    style: const TextStyle(
+                      color: Colors.grey,
+                      fontSize: 13,
                     ),
-                    minHeight: 4,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
-                ),
-              ],
+                  const SizedBox(height: 6),
+                  // Progress bar
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(2),
+                    child: LinearProgressIndicator(
+                      value: song.durationMs > 0
+                          ? (song.progressMs / song.durationMs).clamp(0.0, 1.0)
+                          : 0,
+                      backgroundColor: const Color(0xFF2C2C2C),
+                      valueColor: const AlwaysStoppedAnimation<Color>(
+                        Color(0xFF1DB954),
+                      ),
+                      minHeight: 4,
+                    ),
+                  ),
+                ],
+              ),
             ),
-          ),
-          const SizedBox(width: 8),
-          // Duration
-          Text(
-            formatDurationMs(song.durationMs),
-            style: const TextStyle(
-              color: Colors.grey,
-              fontSize: 12,
+            const SizedBox(width: 8),
+            // Duration
+            Text(
+              formatDurationMs(song.durationMs),
+              style: const TextStyle(
+                color: Colors.grey,
+                fontSize: 12,
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
